@@ -4,38 +4,67 @@ if(localStorage.index==undefined){
 }
 var index=localStorage.index;
 
-//打开数据库
-var db=openDatabase("player","1.2","player",1024*1024);
-//sql语句
-var createTableSQL="CREATE table IF NOT EXISTS t_player(p_id int,p_name varchar(50),p_score int,p_golds int)";
-var deleteTableSQL="DROP table IF EXISTS t_player";
-var insertDataSQL="INSERT INTO t_player (p_id ,p_name,p_score,p_golds) VALUES(?,?,?,?)";
-var updateDataSQL="update t_player set p_score=?,p_golds=p_golds+? where p_name=?";
-function clearData(){
-    getQueryResult(deleteTableSQL,[]);
-    localStorage.index=0;
-}
-//clearData();
-/**
- * SQLite数据库封装
- * @param sql
- * @param params
- */
-function getQueryResult(sql,params){
-    db.transaction(function(obj){
-        obj.executeSql(sql,params,function(){
-            //Dialog.alert("亲,恭喜您,操作成功!");
-        },function(){
-            //Dialog.alert("亲,很遗憾,操作失败!");
-        });
+// IndexedDB数据库配置
+var DB_NAME = "playerDB";
+var DB_VERSION = 1;
+var STORE_NAME = "players";
+var db;
+
+// 打开数据库
+function initDatabase() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+        request.onerror = function(event) {
+            console.error("数据库打开失败:", event.target.error);
+            reject(event.target.error);
+        };
+
+        request.onsuccess = function(event) {
+            db = event.target.result;
+            console.log("数据库打开成功");
+            resolve(db);
+        };
+
+        request.onupgradeneeded = function(event) {
+            db = event.target.result;
+
+            // 创建对象存储
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                const objectStore = db.createObjectStore(STORE_NAME, {
+                    keyPath: "p_id",
+                    autoIncrement: true
+                });
+                objectStore.createIndex("p_name", "p_name", { unique: false });
+                objectStore.createIndex("p_score", "p_score", { unique: false });
+            }
+        };
     });
 }
-/**
- * 创建表
- */
-(function(){
-    getQueryResult(createTableSQL,[]);
-})();
+// 清空数据
+function clearData() {
+    return new Promise((resolve, reject) => {
+        initDatabase().then(() => {
+            const transaction = db.transaction([STORE_NAME], "readwrite");
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.clear();
+
+            request.onsuccess = function() {
+                localStorage.index = 0;
+                resolve();
+            };
+
+            request.onerror = function(event) {
+                reject(event.target.error);
+            };
+        }).catch(reject);
+    });
+}
+
+// 初始化数据库
+initDatabase().then(() => {
+    console.log("数据库初始化完成");
+}).catch(console.error);
 
 /**
  * 添加玩家信息
@@ -53,16 +82,49 @@ function pushInfo(){
             return;
         }
         var score=eval(gameTime*7+imgColorNum*10+imgNum*100);
-        isExist(name.trim());
-        if(isExistFlag==1){
-            getQueryResult(updateDataSQL,[score,imgNum,name]);
-        }else{
-            index++;         //自定义主键id
-            localStorage.index=index;
-            var args=[Number(index),name,score,imgNum];      //id name score gold
-            getQueryResult(insertDataSQL,args);
-        }
-        notify("亲，数据提交成功！");
+
+        initDatabase().then(() => {
+            // 检查玩家是否存在
+            checkPlayerExists(name.trim()).then(exists => {
+                const transaction = db.transaction([STORE_NAME], "readwrite");
+                const store = transaction.objectStore(STORE_NAME);
+
+                if (exists) {
+                    // 更新现有玩家数据
+                    const index = store.index("p_name");
+                    const getRequest = index.get(name.trim());
+
+                    getRequest.onsuccess = function() {
+                        const player = getRequest.result;
+                        if (player) {
+                            player.p_score = score;
+                            player.p_golds = player.p_golds + imgNum;
+
+                            const updateRequest = store.put(player);
+                            updateRequest.onsuccess = function() {
+                                notify("亲，数据提交成功！");
+                            };
+                        }
+                    };
+                } else {
+                    // 添加新玩家
+                    index++;
+                    localStorage.index = index;
+                    const newPlayer = {
+                        p_id: Number(index),
+                        p_name: name.trim(),
+                        p_score: score,
+                        p_golds: imgNum
+                    };
+
+                    const addRequest = store.add(newPlayer);
+                    addRequest.onsuccess = function() {
+                        notify("亲，数据提交成功！");
+                    };
+                }
+            });
+        }).catch(console.error);
+
         isSubmit++;
         localStorage.name=name;
     } else{
@@ -70,22 +132,57 @@ function pushInfo(){
     }
 }
 
+// 检查玩家是否存在
+function checkPlayerExists(name) {
+    return new Promise((resolve) => {
+        initDatabase().then(() => {
+            const transaction = db.transaction([STORE_NAME], "readonly");
+            const store = transaction.objectStore(STORE_NAME);
+            const index = store.index("p_name");
+            const request = index.get(name);
+
+            request.onsuccess = function() {
+                resolve(!!request.result);
+            };
+
+            request.onerror = function() {
+                resolve(false);
+            };
+        }).catch(() => resolve(false));
+    });
+}
+
 /**
  * 显示高分榜
  */
 function showData(flag){
-    var content="<table style='width: 100%'>";
-    db.transaction(function(obj){
-        obj.executeSql('SELECT * FROM t_player ORDER BY p_score DESC limit 10;',[],
-            function(obj,rs){
-                for(var i = 0;i<rs.rows.length;i++){
-                    content+="<tr><td style='width: 50%'>"+rs.rows.item(i).p_name+"</td><td style='width: 50%'>"+rs.rows.item(i).p_score+"</td></tr>";
-                }
-                content+="</table>";
-                flag.innerHTML=content;
-            },function(obj,error){
-                //Dialog.alert("亲,很抱歉,系统繁忙!");
-            });
+    initDatabase().then(() => {
+        const transaction = db.transaction([STORE_NAME], "readonly");
+        const store = transaction.objectStore(STORE_NAME);
+        const index = store.index("p_score");
+        const request = index.openCursor(null, "prev");
+
+        var content = "<table style='width: 100%'>";
+        var count = 0;
+
+        request.onsuccess = function(event) {
+            const cursor = event.target.result;
+
+            if (cursor && count < 10) {
+                content += "<tr><td style='width: 50%'>" + cursor.value.p_name + "</td><td style='width: 50%'>" + cursor.value.p_score + "</td></tr>";
+                count++;
+                cursor.continue();
+            } else {
+                content += "</table>";
+                flag.innerHTML = content;
+            }
+        };
+
+        request.onerror = function() {
+            flag.innerHTML = "<table style='width: 100%'><tr><td>加载失败</td></tr></table>";
+        };
+    }).catch(function() {
+        flag.innerHTML = "<table style='width: 100%'><tr><td>数据库初始化失败</td></tr></table>";
     });
 }
 /**
@@ -93,17 +190,26 @@ function showData(flag){
  */
 var bestScore=0;
 function getBestScore(){
-    db.transaction(function(obj){
-        obj.executeSql('SELECT * FROM t_player ORDER BY p_score DESC limit 1;',[],
-            function(obj,rs){
-                if(rs.rows.length==0){
-                    bestScore=0;
-                }else{
-                    bestScore=rs.rows.item(0).p_score;
-                }
-            },function(obj,error){
-                bestScore=0;
-            });
+    initDatabase().then(() => {
+        const transaction = db.transaction([STORE_NAME], "readonly");
+        const store = transaction.objectStore(STORE_NAME);
+        const index = store.index("p_score");
+        const request = index.openCursor(null, "prev");
+
+        request.onsuccess = function(event) {
+            const cursor = event.target.result;
+            if (cursor) {
+                bestScore = cursor.value.p_score;
+            } else {
+                bestScore = 0;
+            }
+        };
+
+        request.onerror = function() {
+            bestScore = 0;
+        };
+    }).catch(function() {
+        bestScore = 0;
     });
 }
 
@@ -112,37 +218,28 @@ function getBestScore(){
  */
 var playerGolds=0;
 function getPlayerGolds(){
-        db.transaction(function(obj){
-            obj.executeSql('SELECT * FROM t_player where p_name=?;',[localStorage.name],
-                function(obj,rs){
-                    if(rs.rows.length==0){
-                        playerGolds=0;
-                    }else{
-                        playerGolds=rs.rows.item(0).p_golds;
-                    }
-                },function(obj,error){
-                    playerGolds=0;
-                });
-        });
-}
+    initDatabase().then(() => {
+        const transaction = db.transaction([STORE_NAME], "readonly");
+        const store = transaction.objectStore(STORE_NAME);
+        const index = store.index("p_name");
+        const request = index.get(localStorage.name);
 
-/**
- * 判断用户名是否存在
- * @param name
- */
+        request.onsuccess = function() {
+            if (request.result) {
+                playerGolds = request.result.p_golds;
+            } else {
+                playerGolds = 0;
+            }
+        };
 
-function isExist(name){
-    db.transaction(function(obj){
-        obj.executeSql('SELECT * FROM t_player where p_name=?;',[name],
-            function(obj,rs){
-                if(rs.rows.length>0){
-                    isExistFlag=1;
-                }
-            },function(obj,error){
-                isExistFlag=0;
-            });
+        request.onerror = function() {
+            playerGolds = 0;
+        };
+    }).catch(function() {
+        playerGolds = 0;
     });
 }
+
 
 /**
  * 系统通知
