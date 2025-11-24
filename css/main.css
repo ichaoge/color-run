@@ -196,9 +196,6 @@ body {
     color: #ff9d5b;
 }
 footer{
-    width: 150px;
-    font-family: "微软雅黑";
-    display: block;
-    margin: auto;
+    text-align: center;
     line-height: 50px;
 }
